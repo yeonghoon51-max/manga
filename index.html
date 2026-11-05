@@ -44,7 +44,7 @@
     </label>
     <input id="fileInput" type="file" accept="image/*" multiple hidden />
     <ol class="steps">
-      <li><b>1</b> 설정 ⚙️ 에서 Anthropic API 키를 넣어요 (처음 한 번)</li>
+      <li><b>1</b> 설정 ⚙️ 에서 API 키를 넣어요 (처음 한 번) — 무료로 쓰려면 Gemini 키를 만들어요</li>
       <li><b>2</b> 만화 페이지를 올리고 <em>번역하기</em> 를 눌러요</li>
       <li><b>3</b> 말풍선을 눌러 번역을 고치고, 이미지로 저장해요</li>
     </ol>
@@ -107,9 +107,9 @@
   <section class="about" id="about">
     <h2>알아 두면 좋은 것</h2>
     <ul>
-      <li><b>어떻게 동작하나요?</b> 페이지 이미지를 Claude 에 보내 말풍선 위치·원문·번역을 받고, 브라우저에서 말풍선의 흰 부분을 찾아 원래 글자를 지운 뒤 번역을 그 모양에 맞춰 넣어요.</li>
-      <li><b>내 API 키는 안전한가요?</b> 키는 이 기기의 브라우저에만 저장되고 Anthropic 으로만 전송돼요. 이 사이트에는 서버가 없어요. 남과 같이 쓰는 컴퓨터에서는 쓰고 나서 설정에서 키를 지워 주세요.</li>
-      <li><b>비용은요?</b> 페이지마다 Anthropic API 사용료가 들어요. 번역할 때마다 대략적인 금액을 아래에 보여 드려요. 설정에서 더 저렴한 모델을 고를 수도 있어요.</li>
+      <li><b>어떻게 동작하나요?</b> 페이지 이미지를 AI(Gemini 또는 Claude)에 보내 말풍선 위치·원문·번역을 받고, 브라우저에서 말풍선의 흰 부분을 찾아 원래 글자를 지운 뒤 번역을 그 모양에 맞춰 넣어요.</li>
+      <li><b>내 API 키는 안전한가요?</b> 키는 이 기기의 브라우저에만 저장되고, 고른 엔진의 회사(Google 또는 Anthropic)로만 전송돼요. 이 사이트에는 서버가 없어요. 남과 같이 쓰는 컴퓨터에서는 쓰고 나서 설정에서 키를 지워 주세요.</li>
+      <li><b>비용은요?</b> Gemini 엔진은 Google 의 무료 요금제 한도 안에서 0원이에요. Claude 엔진은 페이지마다 사용료가 들고, 번역할 때마다 대략적인 금액을 아래에 보여 드려요.</li>
       <li><b>저작권</b> 이 앱은 본인이 가진 만화를 혼자 읽기 위한 도구예요. 번역한 이미지를 허락 없이 인터넷에 올리거나 나누면 저작권 침해가 될 수 있어요.</li>
       <li><b>폰에 설치</b> 안드로이드 크롬: 메뉴 ⋮ → <em>홈 화면에 추가</em> / 아이폰 사파리: 공유 → <em>홈 화면에 추가</em></li>
     </ul>
@@ -121,26 +121,55 @@
   <form method="dialog" id="settingsForm">
     <h2>설정</h2>
     <label class="field">
-      <span>Anthropic API 키</span>
-      <div class="row">
-        <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." />
-        <button type="button" class="btn ghost" id="toggleKey" aria-label="키 보이기">👁</button>
-      </div>
-      <small><a href="https://platform.claude.com/" target="_blank" rel="noopener">Claude 개발자 콘솔</a> → API Keys 에서 만들 수 있어요. 이 브라우저에만 저장돼요.</small>
+      <span>번역 엔진</span>
+      <select id="engine"></select>
     </label>
+
+    <!-- Gemini (무료) -->
+    <fieldset class="engine-box" id="geminiBox">
+      <label class="field">
+        <span>Gemini API 키</span>
+        <div class="row">
+          <input id="geminiKey" type="password" autocomplete="off" spellcheck="false" placeholder="AIza..." />
+          <button type="button" class="btn ghost" data-toggle-key="geminiKey" aria-label="키 보이기">👁</button>
+        </div>
+        <small><a href="https://aistudio.google.com/" target="_blank" rel="noopener">Google AI Studio</a> 에 구글 계정으로 들어가 <b>Get API key</b> 로 만들어요. 카드 등록 없이 무료 한도 안에서 쓸 수 있어요.</small>
+      </label>
+      <label class="field">
+        <span>Gemini 모델</span>
+        <div class="row">
+          <select id="geminiModel"></select>
+          <button type="button" class="btn" id="loadModels" title="이 키로 쓸 수 있는 모델 목록 받아 오기">목록 불러오기</button>
+        </div>
+        <small>무료 요금제는 하루·분당 요청 수 한도가 있어요. 한도를 넘으면 잠시 기다리거나 내일 다시 쓰면 돼요. 무료 요금제에서는 보낸 이미지가 Google 서비스 개선에 쓰일 수 있어요.</small>
+      </label>
+    </fieldset>
+
+    <!-- Claude (유료) -->
+    <fieldset class="engine-box" id="claudeBox">
+      <label class="field">
+        <span>Claude(Anthropic) API 키</span>
+        <div class="row">
+          <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." />
+          <button type="button" class="btn ghost" data-toggle-key="apiKey" aria-label="키 보이기">👁</button>
+        </div>
+        <small><a href="https://platform.claude.com/" target="_blank" rel="noopener">Claude 개발자 콘솔</a> → API Keys 에서 만들 수 있어요. 쓴 만큼 요금이 나가요.</small>
+      </label>
+      <div class="grid2">
+        <label class="field"><span>Claude 모델</span><select id="model"></select></label>
+        <label class="field"><span>번역 꼼꼼함</span>
+          <select id="effort">
+            <option value="low">빠르게</option>
+            <option value="medium">보통</option>
+            <option value="high">꼼꼼하게 (느림)</option>
+          </select>
+        </label>
+      </div>
+    </fieldset>
+
     <div class="grid2">
       <label class="field"><span>원문 언어</span><select id="source"></select></label>
       <label class="field"><span>번역할 언어</span><select id="target"></select></label>
-    </div>
-    <div class="grid2">
-      <label class="field"><span>모델</span><select id="model"></select></label>
-      <label class="field"><span>번역 꼼꼼함</span>
-        <select id="effort">
-          <option value="low">빠르게</option>
-          <option value="medium">보통</option>
-          <option value="high">꼼꼼하게 (느림)</option>
-        </select>
-      </label>
     </div>
     <div class="grid2">
       <label class="field"><span>글꼴</span>

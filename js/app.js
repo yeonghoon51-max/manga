@@ -6,7 +6,7 @@
    - 번역된 이미지 저장, 설정 저장
    ========================================================= */
 import { analyzeRegion, paintRegion, drawText } from './bubble.js';
-import { translateImage, encodeForClaude, MODELS, LANGS } from './translator.js';
+import { translateImage, encodeForClaude, MODELS, LANGS, ENGINES, GEMINI_MODELS, listGeminiModels } from './translator.js';
 
 const STORE = 'malpungseon.v1';
 // 백만 토큰당 가격 (USD) — 입력, 출력
@@ -27,9 +27,13 @@ const el = (tag, props = {}, ...kids) => {
 };
 
 /* ---------- 설정 ---------- */
-const defaults = { apiKey: '', model: MODELS[0].id, effort: 'medium', source: 'auto', target: 'ko',
+const defaults = { engine: 'gemini', apiKey: '', geminiKey: '', geminiModel: GEMINI_MODELS[0].id, geminiModels: [],
+                   model: MODELS[0].id, effort: 'medium', source: 'auto', target: 'ko',
                    font: 'gothic', scale: 1, glossary: '', theme: null };
-const settings = { ...defaults, ...loadStore() };
+const stored = loadStore();
+// 예전 버전(Claude 키만 있던 때) 설정이면 Claude 엔진을 그대로 쓴다
+if (!stored.engine && stored.apiKey) stored.engine = 'claude';
+const settings = { ...defaults, ...stored };
 function loadStore() { try { return JSON.parse(localStorage.getItem(STORE) || '{}'); } catch { return {}; } }
 function saveStore() { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch { /* 사생활 보호 모드 등 */ } }
 
@@ -122,7 +126,7 @@ function render() {
   const has = state.pages.length > 0;
   $('empty').hidden = has;
   $('work').hidden = !has;
-  $('keyNotice').hidden = !!settings.apiKey;
+  $('keyNotice').hidden = !!activeKey();
   if (!has) return;
   drawCanvas();
   renderOverlay();
@@ -247,19 +251,27 @@ function removeRegion(id) {
 /* =========================================================
    번역
    ========================================================= */
+/* 지금 고른 엔진의 키·모델 */
+const activeKey = () => settings.engine === 'gemini' ? settings.geminiKey : settings.apiKey;
+const engineArgs = () => settings.engine === 'gemini'
+  ? { engine: 'gemini', apiKey: settings.geminiKey, model: settings.geminiModel }
+  : { engine: 'claude', apiKey: settings.apiKey, model: settings.model, effort: settings.effort };
+
 function needKey() {
-  if (settings.apiKey) return false;
-  toast('먼저 설정에서 API 키를 넣어 주세요.');
+  if (activeKey()) return false;
+  toast(settings.engine === 'gemini' ? '먼저 설정에서 Gemini API 키를 넣어 주세요.' : '먼저 설정에서 Claude API 키를 넣어 주세요.');
   openSettings();
   return true;
 }
 
-function costOf(usage, model) {
-  const [pin, pout] = PRICES[model] || PRICES['claude-opus-5-5'];
-  const input = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
-  return { input, output: usage.output_tokens || 0, usd: (input * pin + (usage.output_tokens || 0) * pout) / 1e6 };
+/* 사용량 → "약 $0.03" 같은 비용 문구. Gemini 는 무료 요금제 기준으로 0원 */
+function costText(usage, args) {
+  const tokens = `입력 ${usage.input.toLocaleString()} / 출력 ${usage.output.toLocaleString()} 토큰`;
+  if (args.engine === 'gemini') return `무료 요금제면 0원 (${tokens})`;
+  const [pin, pout] = PRICES[args.model] || PRICES['claude-opus-5-5'];
+  const v = (usage.input * pin + usage.output * pout) / 1e6;
+  return `약 ${v < 0.01 ? '$' + v.toFixed(4) : '$' + v.toFixed(3)} (${tokens})`;
 }
-const usd = v => v < 0.01 ? '$' + v.toFixed(4) : '$' + v.toFixed(3);
 
 async function translatePage(p, signal) {
   p.status = 'working'; p.error = ''; p.note = '';
@@ -267,8 +279,9 @@ async function translatePage(p, signal) {
   try {
     const img = await encodeForClaude(p.bitmap);
     const prev = state.pages[state.pages.indexOf(p) - 1];
+    const args = engineArgs();
     const res = await translateImage({
-      apiKey: settings.apiKey, model: settings.model, effort: settings.effort,
+      ...args,
       image: img, source: settings.source, target: settings.target, glossary: settings.glossary,
       context: prev?.regions.filter(r => r.translation).map(r => ({ original: r.original, translation: r.translation })),
       signal,
@@ -279,11 +292,10 @@ async function translatePage(p, signal) {
       box: { x: r.box.x * k, y: r.box.y * k, w: r.box.w * k, h: r.box.h * k },
       mode: r.kind === 'sfx' ? 'box' : 'auto', scale: 1, status: 'ok', _geom: null,
     }));
-    const c = costOf(res.usage, settings.model);
     p.status = 'done';
     p.note = p.regions.length
-      ? `번역 완료 · 대사 ${p.regions.length}개 · 약 ${usd(c.usd)} (입력 ${c.input.toLocaleString()} / 출력 ${c.output.toLocaleString()} 토큰)`
-      : `글자를 찾지 못했어요. ＋ 영역 으로 직접 골라 보세요. (약 ${usd(c.usd)})`;
+      ? `번역 완료 · 대사 ${p.regions.length}개 · ${costText(res.usage, args)}`
+      : `글자를 찾지 못했어요. ＋ 영역 으로 직접 골라 보세요. (${costText(res.usage, args)})`;
   } catch (e) {
     p.status = signal?.aborted ? (p.regions.length ? 'done' : 'new') : 'error';
     p.error = e.message;
@@ -319,8 +331,9 @@ async function translateRegion(p, r) {
     const pad = Math.max(r.box.w, r.box.h) * 0.08;
     const crop = clampBox({ x: r.box.x - pad, y: r.box.y - pad, w: r.box.w + pad * 2, h: r.box.h + pad * 2 }, p);
     const img = await encodeForClaude(p.bitmap, crop);
+    const args = engineArgs();
     const res = await translateImage({
-      apiKey: settings.apiKey, model: settings.model, effort: settings.effort, image: img, single: true,
+      ...args, image: img, single: true,
       source: settings.source, target: settings.target, glossary: settings.glossary,
       context: p.regions.filter(q => q !== r && q.translation).map(q => ({ original: q.original, translation: q.translation })),
       signal: ac.signal,
@@ -330,8 +343,7 @@ async function translateRegion(p, r) {
     r.translation = res.regions.map(q => q.translation).join(' ');
     r.kind = res.regions[0].kind; r.speaker = res.regions[0].speaker || r.speaker;
     r.status = 'ok'; r._geom = null;
-    const c = costOf(res.usage, settings.model);
-    p.note = `영역 번역 완료 · 약 ${usd(c.usd)}`;
+    p.note = `영역 번역 완료 · ${costText(res.usage, args)}`;
   } catch (e) {
     r.status = 'error'; r.error = e.message;
   } finally {
@@ -450,11 +462,44 @@ async function exportAll() {
    ========================================================= */
 const dlg = $('settings');
 for (const m of MODELS) $('model').append(el('option', { value: m.id, textContent: m.label }));
+for (const [v, t] of Object.entries(ENGINES)) $('engine').append(el('option', { value: v, textContent: t }));
+
+/* Gemini 모델 목록: 기본 별칭 + "목록 불러오기" 로 받아 온 모델 */
+function fillGeminiModels(selected) {
+  const list = [...GEMINI_MODELS, ...settings.geminiModels.filter(m => !GEMINI_MODELS.some(g => g.id === m.id))];
+  if (selected && !list.some(m => m.id === selected)) list.push({ id: selected, label: selected });
+  $('geminiModel').replaceChildren(...list.map(m => el('option', { value: m.id, textContent: m.label })));
+  $('geminiModel').value = selected || GEMINI_MODELS[0].id;
+}
+function showEngine() {
+  const g = $('engine').value === 'gemini';
+  $('geminiBox').hidden = !g;
+  $('claudeBox').hidden = g;
+}
+$('engine').addEventListener('change', showEngine);
+$('loadModels').addEventListener('click', async () => {
+  const b = $('loadModels'), keep = $('geminiModel').value;
+  b.disabled = true; b.textContent = '불러오는 중…';
+  try {
+    const models = await listGeminiModels($('geminiKey').value.trim());
+    settings.geminiModels = models;
+    fillGeminiModels(keep);
+    toast(`쓸 수 있는 모델 ${models.length}개를 불러왔어요.`);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    b.disabled = false; b.textContent = '목록 불러오기';
+  }
+});
 for (const [v, t] of Object.entries(LANGS)) $('source').append(el('option', { value: v, textContent: t }));
 for (const [v, t] of Object.entries(LANGS)) if (v !== 'auto') $('target').append(el('option', { value: v, textContent: t }));
 
 function openSettings() {
   $('apiKey').value = settings.apiKey;
+  $('geminiKey').value = settings.geminiKey;
+  $('engine').value = settings.engine;
+  fillGeminiModels(settings.geminiModel);
+  showEngine();
   for (const k of ['model', 'effort', 'source', 'target', 'font', 'glossary']) $(k).value = settings[k];
   $('scale').value = settings.scale;
   $('scaleOut').textContent = Math.round(settings.scale * 100) + '%';
@@ -466,12 +511,19 @@ $('scale').addEventListener('input', () => {
   drawCanvas();
 });
 $('font').addEventListener('change', async () => { settings.font = $('font').value; await loadFont(); drawCanvas(); });
-$('toggleKey').addEventListener('click', () => { const i = $('apiKey'); i.type = i.type === 'password' ? 'text' : 'password'; });
-$('clearKey').addEventListener('click', () => { $('apiKey').value = ''; settings.apiKey = ''; saveStore(); toast('API 키를 지웠어요.'); render(); });
+document.querySelectorAll('[data-toggle-key]').forEach(b => b.addEventListener('click', () => {
+  const i = $(b.dataset.toggleKey); i.type = i.type === 'password' ? 'text' : 'password';
+}));
+$('clearKey').addEventListener('click', () => {
+  $('apiKey').value = ''; $('geminiKey').value = '';
+  settings.apiKey = ''; settings.geminiKey = ''; saveStore();
+  toast('저장된 API 키를 모두 지웠어요.'); render();
+});
 dlg.addEventListener('close', () => {
   if (dlg.returnValue === 'ok') {
     settings.apiKey = $('apiKey').value.trim();
-    for (const k of ['model', 'effort', 'source', 'target', 'font']) settings[k] = $(k).value;
+    settings.geminiKey = $('geminiKey').value.trim();
+    for (const k of ['engine', 'geminiModel', 'model', 'effort', 'source', 'target', 'font']) settings[k] = $(k).value;
     settings.glossary = $('glossary').value;
     toast('설정을 저장했어요.');
   }

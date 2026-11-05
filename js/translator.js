@@ -1,8 +1,16 @@
 /* =========================================================
-   Claude 에게 페이지(또는 일부)를 보내 글자 영역 찾기 + 원문 읽기 + 번역을 한 번에 받는다.
-   API 키는 이 브라우저에만 저장되고, 요청은 브라우저에서 Anthropic 으로 바로 간다(서버 없음).
+   AI(Claude 또는 Gemini)에게 페이지(또는 일부)를 보내 글자 영역 찾기 + 원문 읽기 + 번역을 한 번에 받는다.
+   API 키는 이 브라우저에만 저장되고, 요청은 브라우저에서 Anthropic / Google 로 바로 간다(서버 없음).
    ========================================================= */
 import Anthropic from './vendor/anthropic-sdk.mjs';
+import { translateWithGemini } from './gemini.js';
+
+export { GEMINI_MODELS, listGeminiModels } from './gemini.js';
+
+export const ENGINES = {
+  gemini: 'Google Gemini — 무료 요금제 가능',
+  claude: 'Anthropic Claude — 유료, 가장 정확',
+};
 
 export const MODELS = [
   { id: 'claude-opus-5-5',   label: 'Claude Opus 5.5 — 가장 정확 (기본)' },
@@ -43,7 +51,7 @@ const SYSTEM = `You are a professional manga/comic letterer and translator.
 You receive one comic page (or a cropped part of one) and return every piece of text on it as structured data.
 
 For each text region:
-- Box: pixel coordinates in the image exactly as given (the size is stated in the request). For text inside a speech or thought balloon, the box encloses the whole balloon including its outline. For text with no balloon (narration on art, signs, sound effects), the box encloses the text itself with a small margin.
+- Box: where the region is (the coordinate format is stated in the request). For text inside a speech or thought balloon, the box encloses the whole balloon including its outline. For text with no balloon (narration on art, signs, sound effects), the box encloses the text itself with a small margin.
 - kind: speech, thought, narration (caption boxes), sfx (sound effects / onomatopoeia drawn as art), sign (text that is part of the scene), other.
 - original: the text exactly as written, joined into one line (vertical Japanese read top-to-bottom, columns right-to-left). Keep ruby/furigana out unless it is the only reading.
 - translation: a natural, idiomatic translation into the target language that a native reader would find in a professionally published edition. Match each character's voice and register (casual speech, politeness levels, dialect, a child's or an elder's way of talking); keep jokes and wordplay working where possible rather than translating literally; keep it short enough to fit the balloon. For sfx, use the target language's own onomatopoeia.
@@ -55,7 +63,7 @@ If the image has no text, return an empty list.`;
 
 let client = null, clientKey = '';
 function getClient(apiKey) {
-  if (!apiKey) throw new Error('설정에서 Anthropic API 키를 먼저 넣어 주세요.');
+  if (!apiKey) throw new Error('설정에서 Claude(Anthropic) API 키를 먼저 넣어 주세요.');
   if (!client || clientKey !== apiKey) {
     // dangerouslyAllowBrowser: 서버 없이 브라우저에서 바로 부르기 위한 옵션.
     // 키는 사용자의 브라우저에만 있으므로, 남과 같이 쓰는 컴퓨터에서는 쓰지 말 것.
@@ -67,7 +75,8 @@ function getClient(apiKey) {
 
 /**
  * @param {object} p
- * @param {string} p.apiKey
+ * @param {'claude'|'gemini'} p.engine
+ * @param {string} p.apiKey  고른 엔진의 키
  * @param {string} p.model
  * @param {'low'|'medium'|'high'} p.effort
  * @param {{data:string, mediaType:string, width:number, height:number}} p.image  base64 이미지
@@ -77,15 +86,16 @@ function getClient(apiKey) {
  * @param {Array<{original:string, translation:string}>} [p.context]  앞 페이지 대사 (말투 일관성)
  * @param {boolean} [p.single]  사용자가 직접 고른 작은 영역인지
  * @param {AbortSignal} [p.signal]
- * @returns {Promise<{regions:Array, usage:object}>}
+ * @returns {Promise<{regions:Array, usage:{input:number, output:number}, model:string}>}
  */
 export async function translateImage(p) {
-  const c = getClient(p.apiKey);
   const target = LANGS[p.target] || p.target;
   const source = p.source === 'auto' ? 'detect it automatically' : (LANGS[p.source] || p.source);
 
   const lines = [
-    `Image size: ${p.image.width} x ${p.image.height} pixels.`,
+    p.engine === 'gemini'
+      ? 'Coordinates: box_2d = [ymin, xmin, ymax, xmax], normalized to 0-1000.'
+      : `Image size: ${p.image.width} x ${p.image.height} pixels. Coordinates: x0, y0, x1, y1 in pixels of this image.`,
     `Source language: ${source}. Target language: ${target === '한국어' ? 'Korean (한국어)' : target}.`,
   ];
   if (p.single) lines.push('This image is a crop the user selected around one text region. Return it as a single region whose box covers the whole image, unless it clearly contains several separate balloons.');
@@ -95,6 +105,25 @@ export async function translateImage(p) {
       p.context.slice(-30).map(r => `- ${r.original} → ${r.translation}`).join('\n'));
   }
 
+  const userText = lines.join('\n\n');
+  const raw = p.engine === 'gemini'
+    ? await translateWithGemini(p, SYSTEM, userText)
+    : await translateWithClaude(p, userText);
+
+  // 두 엔진 모두 { x0, y0, x1, y1 } 픽셀 좌표로 맞춘 뒤 같은 모양으로 정리
+  const W = p.image.width, H = p.image.height;
+  const regions = raw.regions.map(r => {
+    const x0 = Math.max(0, Math.min(r.x0, r.x1)), x1 = Math.min(W, Math.max(r.x0, r.x1));
+    const y0 = Math.max(0, Math.min(r.y0, r.y1)), y1 = Math.min(H, Math.max(r.y0, r.y1));
+    return { box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, kind: KINDS.includes(r.kind) ? r.kind : 'other',
+             speaker: r.speaker || '', original: r.original || '', translation: r.translation || '' };
+  }).filter(r => r.box.w >= 4 && r.box.h >= 4);
+
+  return { regions, usage: raw.usage, model: raw.model };
+}
+
+async function translateWithClaude(p, userText) {
+  const c = getClient(p.apiKey);
   const params = {
     model: p.model,
     max_tokens: 16000,
@@ -104,7 +133,7 @@ export async function translateImage(p) {
       role: 'user',
       content: [
         { type: 'image', source: { type: 'base64', media_type: p.image.mediaType, data: p.image.data } },
-        { type: 'text', text: lines.join('\n\n') },
+        { type: 'text', text: userText },
       ],
     }],
   };
@@ -133,15 +162,12 @@ export async function translateImage(p) {
   let parsed;
   try { parsed = JSON.parse(text); } catch { throw new Error('번역 결과를 읽지 못했어요. 다시 시도해 주세요.'); }
 
-  const W = p.image.width, H = p.image.height;
-  const regions = (parsed.regions || []).map(r => {
-    const x0 = Math.max(0, Math.min(r.x0, r.x1)), x1 = Math.min(W, Math.max(r.x0, r.x1));
-    const y0 = Math.max(0, Math.min(r.y0, r.y1)), y1 = Math.min(H, Math.max(r.y0, r.y1));
-    return { box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, kind: KINDS.includes(r.kind) ? r.kind : 'other',
-             speaker: r.speaker || '', original: r.original || '', translation: r.translation || '' };
-  }).filter(r => r.box.w >= 4 && r.box.h >= 4);
-
-  return { regions, usage: res.usage, model: res.model };
+  const u = res.usage || {};
+  return {
+    regions: parsed.regions || [],
+    usage: { input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), output: u.output_tokens || 0 },
+    model: res.model,
+  };
 }
 
 /* SDK 의 오류 종류별로 알아듣기 쉬운 말로 바꾼다 (자바의 catch 를 여러 개 두는 것과 같음) */

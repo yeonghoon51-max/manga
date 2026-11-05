@@ -189,3 +189,7 @@ main{max-width:1500px;margin:0 auto;padding:16px}
   .grid2{grid-template-columns:1fr}
   .drop{padding:36px 16px}
 }
+
+/* 번역 엔진별 설정 묶음 */
+.engine-box{border:1px solid var(--line);border-radius:12px;padding:12px;margin:0;display:grid;gap:12px;min-width:0}
+.engine-box .row select{flex:1;min-width:0}

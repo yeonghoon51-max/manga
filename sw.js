@@ -1,9 +1,9 @@
 /* 오프라인에서도 앱 화면이 열리도록 기본 파일을 저장해 두는 서비스 워커.
    번역 요청(api.anthropic.com)은 저장하지 않고 항상 인터넷으로 보낸다.
    파일을 고치면 아래 VERSION 을 올려야 휴대폰에 새 버전이 들어간다. */
-const VERSION = 'malpungseon-v1';
+const VERSION = 'malpungseon-v2';
 const SHELL = [
-  './', 'index.html', 'css/style.css', 'js/app.js', 'js/bubble.js', 'js/translator.js',
+  './', 'index.html', 'css/style.css', 'js/app.js', 'js/bubble.js', 'js/translator.js', 'js/gemini.js',
   'js/vendor/anthropic-sdk.mjs', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 
